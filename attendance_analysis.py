@@ -11,13 +11,6 @@ CODE_WORK_VALUES = {
 # Utility Functions
 # ----------------------------
 
-def get_weekday_name(day_num, month, year):
-    """Return weekday name (e.g., 'Monday') for a given day in the month/year."""
-    try:
-        return datetime(year, month, day_num).strftime("%A")
-    except ValueError:
-        return None
-
 def normalize_id(emp_id):
     """Normalize employee IDs consistently."""
     try:
@@ -38,7 +31,7 @@ def expected_work_value(weekday, contractual_days):
 # Main Analysis Function
 # ----------------------------
 
-def calculate_comp_off_and_leave(df_wide, contracts_df, month, year, leave_codes=None):
+def calculate_comp_off_and_leave(df_wide, contracts_df, date_list, leave_codes=None):
     if leave_codes is None:
         leave_codes = ['L', 'S', 'U']
 
@@ -48,18 +41,10 @@ def calculate_comp_off_and_leave(df_wide, contracts_df, month, year, leave_codes
     contracts_df['Employee #'] = contracts_df['Employee #'].apply(normalize_id)
     contract_dict = dict(zip(contracts_df['Employee #'], contracts_df['Contractual Days Per Week']))
 
-    # Identify valid day columns
-    day_cols = [c for c in df_wide.columns if c.startswith('Day ')]
-    day_nums = [int(c.split()[1]) for c in day_cols]
-
-    weekday_map = {}
-    valid_days = []
-
-    for d in day_nums:
-        wd = get_weekday_name(d, month, year)
-        if wd:
-            weekday_map[d] = wd
-            valid_days.append(d)
+    # Generate mappings using the precise datetime objects passed from app.py
+    valid_cols = [dt.strftime("%d-%b") for dt in date_list]
+    weekday_map = {dt.strftime("%d-%b"): dt.strftime("%A") for dt in date_list}
+    datetime_map = {dt.strftime("%d-%b"): dt for dt in date_list}
 
     comp_records = []
     leave_records = []
@@ -83,7 +68,7 @@ def calculate_comp_off_and_leave(df_wide, contracts_df, month, year, leave_codes
                 'Company': company,
                 'Contractual Days/Week': 'Unknown',
                 'Total Leave Days': 0,
-                'Leave Days (Numbers)': 'None',
+                'Leave Days (Dates)': 'None',
                 'Comp-Off Earned (Days)': 0
             })
             continue
@@ -92,19 +77,20 @@ def calculate_comp_off_and_leave(df_wide, contracts_df, month, year, leave_codes
         weekly_expected = {}
         leave_days = []
 
-        # Day-level processing
-        for day_num in valid_days:
-            code = str(row[f'Day {day_num}']).upper().strip()
+        # Day-level processing mapped perfectly across month boundaries
+        for col_name in valid_cols:
+            code = str(row.get(col_name, "")).upper().strip()
             actual = CODE_WORK_VALUES.get(code, 0.0)
 
             if code in leave_codes:
-                leave_days.append(day_num)
+                leave_days.append(col_name) # Store the actual "20-May" formatted string
 
-            weekday = weekday_map[day_num]
+            weekday = weekday_map[col_name]
             expected = expected_work_value(weekday, contractual)
 
             try:
-                iso_year, iso_week, _ = datetime(year, month, day_num).isocalendar()
+                dt = datetime_map[col_name]
+                iso_year, iso_week, _ = dt.isocalendar()
                 week_key = (iso_year, iso_week)
             except ValueError:
                 continue
@@ -134,7 +120,7 @@ def calculate_comp_off_and_leave(df_wide, contracts_df, month, year, leave_codes
             'Company': company,
             'Contractual Days/Week': contractual,
             'Total Leave Days': len(leave_days),
-            'Leave Days (Numbers)': ', '.join(map(str, sorted(leave_days))) if leave_days else 'None',
+            'Leave Days (Dates)': ', '.join(leave_days) if leave_days else 'None',
             'Comp-Off Earned (Days)': total_comp
         })
 
