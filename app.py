@@ -4,7 +4,7 @@ import io
 import re
 import tempfile
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import calendar
 
 import streamlit as st
@@ -66,7 +66,7 @@ def load_easyocr():
 ocr_reader = load_easyocr()
 
 # ----------------------------------------------------------------------
-# Extraction functions
+# Extraction functions (Kept exactly the same)
 # ----------------------------------------------------------------------
 def extract_employee_info(pdf_path, filename=""):
     employee_info = {
@@ -121,7 +121,6 @@ def extract_attendance_codes(pdf_path, filename=""):
                     for idx, row in df_tab.iterrows():
                         row_str = " ".join([str(c).upper() if c else "" for c in row])
                         if "ATTENDANCE" in row_str:
-                            # Try header mapping
                             if idx > 0:
                                 header_row = df_tab.iloc[idx-1]
                                 header_map = {}
@@ -137,7 +136,6 @@ def extract_attendance_codes(pdf_path, filename=""):
                                         val = row.iloc[col_idx]
                                         attendance[d] = str(val).strip() if val else ""
                                     return attendance
-                            # Fallback: positional columns 1..31
                             for col_idx, val in enumerate(row):
                                 if 1 <= col_idx <= 31:
                                     attendance[col_idx] = str(val).strip() if val else ""
@@ -147,9 +145,9 @@ def extract_attendance_codes(pdf_path, filename=""):
     return attendance
 
 # ----------------------------------------------------------------------
-# Excel formatter with weekday row
+# Excel formatter with weekday row (Updated for dynamic dates)
 # ----------------------------------------------------------------------
-def create_formatted_excel(df_results, day_weekday_map):
+def create_formatted_excel(df_results, day_weekday_map, date_cols):
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
         df_results.to_excel(writer, index=False, sheet_name="Timesheets", startrow=2)
@@ -166,9 +164,8 @@ def create_formatted_excel(df_results, day_weekday_map):
             cell.alignment = Alignment(horizontal="center")
 
         for col_num, col_name in enumerate(df_results.columns, 1):
-            if col_name.startswith("Day "):
-                day_num = int(col_name.split()[1])
-                wd = day_weekday_map.get(day_num, "")
+            if col_name in date_cols:
+                wd = day_weekday_map.get(col_name, "")
                 cell = worksheet.cell(row=2, column=col_num)
                 cell.value = wd
                 cell.alignment = Alignment(horizontal="center")
@@ -189,11 +186,9 @@ def create_formatted_excel(df_results, day_weekday_map):
     return excel_buffer.getvalue()
 
 # ----------------------------------------------------------------------
-# Display Reports Function (missing from original)
+# Display Reports Function
 # ----------------------------------------------------------------------
 def display_reports(comp_report, leave_report):
-    """Display comp-off and leave reports in Streamlit."""
-
     st.subheader("📋 Comp-Off Report")
     if not comp_report.empty:
         st.success(f"Found {len(comp_report)} employees with comp-off earnings")
@@ -203,7 +198,6 @@ def display_reports(comp_report, leave_report):
             hide_index=True
         )
 
-        # Download comp-off report
         csv_comp = comp_report.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Download Comp-Off Report (CSV)",
@@ -213,7 +207,7 @@ def display_reports(comp_report, leave_report):
             key="comp_off_dl"
         )
     else:
-        st.info("No comp-off earned this month.")
+        st.info("No comp-off earned this period.")
 
     st.divider()
 
@@ -225,7 +219,6 @@ def display_reports(comp_report, leave_report):
             hide_index=True
         )
 
-        # Download leave report
         csv_leave = leave_report.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Download Leave Report (CSV)",
@@ -238,25 +231,28 @@ def display_reports(comp_report, leave_report):
         st.info("No leave records found.")
 
 # ----------------------------------------------------------------------
-# Sidebar Configuration
+# Sidebar Configuration (Updated for dynamic dates)
 # ----------------------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Configuration")
 
-    st.subheader("📅 Period Selection")
-    selected_month = st.selectbox(
-        "Month", 
-        range(1, 13),
-        format_func=lambda x: datetime(2000, x, 1).strftime('%B'),
-        index=datetime.now().month - 1
-    )
-    selected_year = st.number_input(
-        "Year", 
-        min_value=2000, 
-        max_value=2100,
-        value=datetime.now().year, 
-        step=1
-    )
+    st.subheader("📅 Payroll Period Selection")
+    
+    # Calculate default 20th-19th dates
+    today = datetime.today()
+    default_end = datetime(today.year, today.month, 19)
+    default_start = default_end.replace(day=20)
+    if today.month == 1:
+        default_start = default_start.replace(year=today.year-1, month=12)
+    else:
+        default_start = default_start.replace(month=today.month-1)
+    
+    start_date = st.date_input("Start Date", value=default_start)
+    end_date = st.date_input("End Date", value=default_end)
+    
+    # Generate the continuous array of dates
+    date_list = [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
+    date_str_list = [dt.strftime("%d-%b") for dt in date_list]
 
     st.divider()
 
@@ -279,7 +275,7 @@ with st.sidebar:
     """)
 
     st.divider()
-    st.caption("v2.0 | HR Timesheet Extractor Pro")
+    st.caption("v2.1 | Dynamic HR Timesheet Extractor Pro")
 
 # ----------------------------------------------------------------------
 # Main UI
@@ -303,19 +299,16 @@ with col2:
         help="Upload one or more timesheet PDFs"
     )
 
-# Validation
 if not PDF_PLUMBER_AVAILABLE:
     st.error("❌ pdfplumber not installed. PDF extraction will not work.")
 if not OPENPYXL_AVAILABLE:
     st.warning("⚠️ openpyxl not installed. Excel downloads will not work.")
 
-# Process button
 if uploaded_files and contract_file:
     st.divider()
     if st.button(f"🚀 Extract & Analyze {len(uploaded_files)} File(s)", use_container_width=True, type="primary"):
 
         with st.spinner("Processing..."):
-            # Load contracts
             try:
                 if contract_file.name.endswith('.csv'):
                     contracts_df = pd.read_csv(contract_file)
@@ -333,7 +326,6 @@ if uploaded_files and contract_file:
                 st.error(f"❌ Error loading contract file: {e}")
                 st.stop()
 
-            # Process each PDF
             all_results = []
             progress_bar = st.progress(0)
 
@@ -364,8 +356,13 @@ if uploaded_files and contract_file:
                     "Designation": emp_info["designation"],
                     "Company": emp_info["company"]
                 }
-                for d in range(1, 32):
-                    row[f"Day {d}"] = att_codes.get(d, "")
+                
+                # Dynamic Date Mapping instead of hardcoding Day 1..31
+                for current_date in date_list:
+                    col_name = current_date.strftime("%d-%b")
+                    # Map the raw day extracted from the PDF (1-31) to the actual date timeline
+                    row[col_name] = att_codes.get(current_date.day, "")
+                    
                 all_results.append(row)
 
             progress_bar.empty()
@@ -376,14 +373,8 @@ if uploaded_files and contract_file:
 
             df_results = pd.DataFrame(all_results)
 
-            # Build day -> weekday map
-            day_weekday = {}
-            for d in range(1, 32):
-                try:
-                    date = datetime(selected_year, selected_month, d)
-                    day_weekday[d] = date.strftime("%A")
-                except ValueError:
-                    day_weekday[d] = ""
+            # Build day -> weekday map based on precise dynamic dates
+            day_weekday = {dt.strftime("%d-%b"): dt.strftime("%A") for dt in date_list}
 
             # Show summary
             st.divider()
@@ -392,9 +383,8 @@ if uploaded_files and contract_file:
             met1, met2, met3, met4 = st.columns(4)
             met1.metric("Total Employees", len(df_results))
             met2.metric("Files Processed", len(uploaded_files))
-            met3.metric("Data Format", "Wide (Horizontal)")
+            met3.metric("Period", f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d')}")
 
-            # Count missing contracts
             emp_ids = df_results["Employee #"].astype(str).apply(att_an.normalize_id)
             contract_ids = contracts_df["Employee #"].apply(att_an.normalize_id)
             missing = set(emp_ids) - set(contract_ids)
@@ -412,11 +402,11 @@ if uploaded_files and contract_file:
             st.header("📊 Attendance Analysis Reports")
 
             try:
+                # Passing the full date array into the updated analysis file
                 comp_report, leave_report = att_an.calculate_comp_off_and_leave(
                     df_wide=df_results,
                     contracts_df=contracts_df,
-                    month=selected_month,
-                    year=selected_year,
+                    date_list=date_list, 
                     leave_codes=leave_codes
                 )
                 display_reports(comp_report, leave_report)
@@ -432,11 +422,11 @@ if uploaded_files and contract_file:
 
             if OPENPYXL_AVAILABLE:
                 with col_dl1:
-                    excel_data = create_formatted_excel(df_results, day_weekday)
+                    excel_data = create_formatted_excel(df_results, day_weekday, date_str_list)
                     st.download_button(
                         label="📊 Download Wide Excel (with weekdays)",
                         data=excel_data,
-                        file_name=f"Timesheet_Wide_{selected_year}{selected_month:02d}.xlsx",
+                        file_name=f"Timesheet_Wide_{end_date.strftime('%Y_%b')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True
                     )
@@ -444,12 +434,11 @@ if uploaded_files and contract_file:
                 st.info("Install openpyxl for Excel export")
 
             with col_dl2:
-                # Raw CSV download
                 csv_data = df_results.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="📄 Download Raw Data (CSV)",
                     data=csv_data,
-                    file_name=f"Timesheet_Raw_{selected_year}{selected_month:02d}.csv",
+                    file_name=f"Timesheet_Raw_{end_date.strftime('%Y_%b')}.csv",
                     mime="text/csv",
                     use_container_width=True
                 )
@@ -457,7 +446,6 @@ if uploaded_files and contract_file:
 else:
     st.info("👆 Please upload both the contract file and timesheet PDFs to begin.")
 
-    # Show sample data info
     with st.expander("📖 Sample Contract File Format"):
         sample_df = pd.DataFrame({
             "Employee #": ["005000", "005001"],
